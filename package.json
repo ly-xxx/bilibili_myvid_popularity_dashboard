@@ -6,7 +6,12 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "download-taffy": "node scripts/download-taffy-music.js",
+    "download-taffy:list": "node scripts/download-taffy-music.js --list-only",
+    "download-taffy:playlist": "node scripts/download-taffy-music.js --from-playlist",
+    "metadata": "node scripts/generate-metadata.js",
+    "metadata:list": "node scripts/generate-metadata.js --list"
   },
   "keywords": [],
   "author": "",

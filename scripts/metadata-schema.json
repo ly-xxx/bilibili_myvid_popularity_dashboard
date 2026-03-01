@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "视频音乐元数据",
+  "description": "每个视频对应的核心音乐信息，可从 B 站详情页提取，歌词需在网易云等平台补充",
+  "type": "object",
+  "properties": {
+    "歌曲名": {
+      "type": "string",
+      "description": "歌曲名称，从 B 站视频标题/简介解析"
+    },
+    "演唱者": {
+      "type": "string",
+      "description": "演唱者/原唱，从 B 站视频标题/简介解析"
+    },
+    "歌词片段": {
+      "type": "string",
+      "description": "歌词片段，需在网易云等平台查找后手动补充"
+    },
+    "封面": {
+      "type": "string",
+      "description": "本地封面图片文件名，与视频同目录"
+    },
+    "_source": {
+      "type": "object",
+      "description": "来源信息，便于调试",
+      "properties": {
+        "bvid": { "type": "string" },
+        "title": { "type": "string" },
+        "desc": { "type": "string" }
+      }
+    }
+  }
+}

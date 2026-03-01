@@ -4,3 +4,8 @@ data/catalog-snapshot.json
 .env
 .DS_Store
 Thumbs.db
+# taffy-music 视频不提交（体积大），metadata/lrc/封面/index 等会提交
+taffy-music/**/*.mp4
+taffy-music/**/*.flv
+taffy-music/**/*.mkv
+taffy-music/**/*.webm

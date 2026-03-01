@@ -22,9 +22,9 @@ const upMid = String(process.env.UP_MID || DEFAULT_UP_MID).trim();
 const configuredBvids = parseBvids(process.env.BVIDS);
 const fallbackBvids = configuredBvids.length ? configuredBvids : DEFAULT_BVIDS;
 
-const DEFAULT_CACHE_MS = Number(process.env.BILI_CACHE_MS || 15000);
-const DEFAULT_THROTTLE_MS = Number(process.env.BILI_THROTTLE_MS || 1200);
-const DEFAULT_CYCLE_SLEEP_MS = Number(process.env.BILI_CYCLE_SLEEP_MS || 5000);
+const DEFAULT_CACHE_MS = Number(process.env.BILI_CACHE_MS || 30000);
+const DEFAULT_THROTTLE_MS = Number(process.env.BILI_THROTTLE_MS || 3000);
+const DEFAULT_CYCLE_SLEEP_MS = Number(process.env.BILI_CYCLE_SLEEP_MS || 15000);
 const DEFAULT_VIDEOS_REFRESH_MS = Number(process.env.BILI_VIDEOS_REFRESH_MS || 600000);
 const DEFAULT_MAX_VIDEOS = Number(process.env.BILI_MAX_VIDEOS || 20);
 const DEFAULT_PLAY_REFRESH_MS = Number(process.env.BILI_PLAY_REFRESH_MS || 180000);
@@ -175,8 +175,10 @@ async function readHistoryFromCsv(bvid, fromTs, toTs) {
 
 function parseBiliNumber(value) {
   if (typeof value === "number") return value;
-  const raw = String(value || "").trim();
+  let raw = String(value || "").trim();
   if (!raw || raw === "--") return 0;
+  // 支持 "9.4万+"、"1人"、"1人在看" 等 B 站展示格式
+  raw = raw.replace(/万\+?$/, "万").replace(/亿\+?$/, "亿");
   if (raw.endsWith("万")) {
     const base = Number(raw.slice(0, -1));
     return Number.isFinite(base) ? Math.round(base * 10000) : 0;
@@ -185,21 +187,27 @@ function parseBiliNumber(value) {
     const base = Number(raw.slice(0, -1));
     return Number.isFinite(base) ? Math.round(base * 100000000) : 0;
   }
+  // 提取开头的数字（支持 "1人"、"28人在看" 等）
+  const numMatch = raw.match(/^(\d+(?:\.\d+)?)/);
+  if (numMatch) {
+    const parsed = Number(numMatch[1]);
+    if (Number.isFinite(parsed)) return Math.floor(parsed);
+  }
   const normalized = raw.replace(/,/g, "");
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getAdaptivePollIntervalMs(onlineRaw) {
-  // Cap max frequency to old baseline (15s), make low-traffic videos slower.
+  // 降低轮询频率，避免请求过于频繁
   const online = Number(onlineRaw);
-  if (!Number.isFinite(online)) return 60000;
-  if (online >= 120) return 15000;
-  if (online >= 80) return 18000;
-  if (online >= 40) return 25000;
-  if (online >= 15) return 35000;
-  if (online >= 5) return 45000;
-  return 60000;
+  if (!Number.isFinite(online)) return 90000;
+  if (online >= 120) return 30000;
+  if (online >= 80) return 35000;
+  if (online >= 40) return 45000;
+  if (online >= 15) return 55000;
+  if (online >= 5) return 70000;
+  return 90000;
 }
 
 function parsePositiveIntInRange(value, min, max) {
@@ -372,7 +380,22 @@ async function fetchCount(bvid, cid) {
     throw new Error(`online api code ${data.code}`);
   }
 
-  return data.data.count ?? 0;
+  const total = data.data.total;
+  const count = data.data.count;
+  if (process.env.DEBUG_ONLINE === "1") {
+    console.log(`[DEBUG] ${bvid} API raw: total=${JSON.stringify(total)} count=${JSON.stringify(count)}`);
+  }
+
+  // 仅使用 total（全端人数），与 B 站视频详情页显示的「正在看」一致
+  // total 不可用时返回 null，由调用方复用缓存值，避免曲线突变
+  if (total != null && String(total).trim()) {
+    const parsed = parseBiliNumber(total);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (process.env.DEBUG_ONLINE === "1") {
+    console.log(`[DEBUG] ${bvid} total 不可用，将复用缓存`);
+  }
+  return null;
 }
 
 async function fetchPlayCountByBvid(bvid) {
@@ -431,7 +454,16 @@ async function refreshOnce() {
         }
 
         const cid = await fetchCid(bvid);
-        const count = await fetchCount(bvid, cid);
+        let count = await fetchCount(bvid, cid);
+        // total 不可用时复用上次缓存值，避免曲线突变
+        if (count == null || !Number.isFinite(Number(count))) {
+          const prevCount = countCache.get(bvid)?.count;
+          if (prevCount != null && Number.isFinite(Number(prevCount))) {
+            count = prevCount;
+          } else {
+            count = 0;
+          }
+        }
         const numericCount = Number(count);
         let playNumber = videoCatalog.get(bvid)?.playNumber ?? 0;
         const nowForPlay = Date.now();
@@ -507,6 +539,18 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, timestamp: Date.now() });
 });
 
+// 调试：查看 countCache 当前状态，用于排查前后端数据不一致
+app.get("/api/debug/count-cache", (req, res) => {
+  const bvid = String(req.query.bvid || "").trim();
+  const entries = [];
+  for (const [k, v] of countCache) {
+    if (!bvid || k === bvid) {
+      entries.push({ bvid: k, ...v });
+    }
+  }
+  res.json({ success: true, countCache: Object.fromEntries(countCache), entries });
+});
+
 app.get("/api/online-data", async (req, res) => {
   if (!activeVideoBvids.length) {
     try {
@@ -547,13 +591,24 @@ app.get("/api/online-data", async (req, res) => {
     };
     // Card sparkline data is loaded from persisted CSV to keep continuity across restarts.
     const historyFromCsv = await readHistoryFromCsv(bvid, oneHourAgo, now);
+    // 显式使用 countCache 的 count，避免 meta 中任何字段覆盖（arc/search 等可能带额外字段）
+    const onlineCount = stat.count;
     return {
       ...meta,
-      ...stat,
+      cid: stat.cid,
+      count: onlineCount,
+      updatedAt: stat.updatedAt,
+      source: stat.source,
+      error: stat.error,
       history1h: downsampleHistory(historyFromCsv, 80),
     };
   }));
 
+  const debugVideo = videos.find((v) => v.bvid === "BV1H3Aez9ESM");
+  if (debugVideo && process.env.DEBUG_ONLINE === "1") {
+    console.log(`[DEBUG] /api/online-data 返回 BV1H3Aez9ESM count=`, debugVideo.count);
+  }
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.json({
     success: true,
     videos,
@@ -782,6 +837,7 @@ app.get("/api/cover", async (req, res) => {
 });
 
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/taffy-music", express.static(path.join(__dirname, "taffy-music")));
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });

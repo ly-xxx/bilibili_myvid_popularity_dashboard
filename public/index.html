@@ -185,7 +185,7 @@
               min="1000"
               max="120000"
               class="mt-1 w-full rounded border border-slate-800 bg-black px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-emerald-600"
-              placeholder="15000"
+              placeholder="30000"
             />
           </label>
           <label class="text-[11px] text-slate-300">
@@ -196,7 +196,7 @@
               min="200"
               max="10000"
               class="mt-1 w-full rounded border border-slate-800 bg-black px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-emerald-600"
-              placeholder="1200"
+              placeholder="3000"
             />
           </label>
           <label class="text-[11px] text-slate-300">
@@ -207,7 +207,7 @@
               min="1000"
               max="60000"
               class="mt-1 w-full rounded border border-slate-800 bg-black px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-emerald-600"
-              placeholder="5000"
+              placeholder="15000"
             />
           </label>
           <label class="text-[11px] text-slate-300">
@@ -438,8 +438,8 @@
         const raw = String(val ?? "").trim();
         if (!raw || raw === "--") return null;
         const n = toNumber(raw);
-        if (!Number.isFinite(n)) return null;
-        return n === 1 ? 0 : n;
+        if (!Number.isFinite(n) || n < 0) return null;
+        return n;
       }
 
       function updateTotalOnline(videos) {
@@ -483,7 +483,7 @@
           tip.style.display = "none";
           return;
         }
-        const values = points.map((p) => p.online === 1 ? 0 : p.online);
+        const values = points.map((p) => Number(p.online) || 0);
         const min = sparklineScale.min;
         const max = sparklineScale.max;
         const range = Math.max(1, max - min);
@@ -524,7 +524,7 @@
             const ratio = (e.clientX - rect.left) / Math.max(1, rect.width);
             const idx = Math.max(0, Math.min(points.length - 1, Math.round(ratio * (points.length - 1))));
             const p = points[idx];
-            const online = p.online === 1 ? 0 : p.online;
+            const online = Number(p.online) || 0;
             const d = new Date(p.timestamp);
             tip.textContent = `${d.toLocaleString()} | 在线 ${online} | 播放 ${p.play}`;
             tip.style.left = `${(coords[idx].x / 100) * rect.width}px`;
@@ -542,7 +542,7 @@
         const all = [];
         videos.forEach((video) => {
           (video.history1h || []).forEach((p) => {
-            const n = p.online === 1 ? 0 : (Number(p.online) || 0);
+            const n = Number(p.online) || 0;
             all.push(n);
           });
           const current = normalizeOnlineCount(video.count);
@@ -576,7 +576,7 @@
 
       async function refreshAll() {
         try {
-          const response = await fetch("/api/online-data");
+          const response = await fetch("/api/online-data", { cache: "no-store" });
           const payload = await response.json();
 
           if (!payload.success) {
@@ -584,6 +584,9 @@
           }
 
           const incoming = payload.videos || [];
+          // 调试：检查 BV1H3Aez9ESM 的 count
+          const debugV = incoming.find((v) => v.bvid === "BV1H3Aez9ESM");
+          if (debugV) console.log("[DEBUG] BV1H3Aez9ESM from API:", debugV.count, "full:", debugV);
           const sorted = sortVideos(incoming, currentSort);
           computeGlobalSparklineScale(sorted);
           const byBvid = new Map(sorted.map((v) => [v.bvid, v]));

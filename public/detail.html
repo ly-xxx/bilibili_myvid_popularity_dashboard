@@ -107,8 +107,7 @@
       }
 
       function normalizeOnline(n) {
-        const x = Number(n) || 0;
-        return x === 1 ? 0 : x;
+        return Number(n) || 0;
       }
 
       function pointsToSmoothPath(pts) {
