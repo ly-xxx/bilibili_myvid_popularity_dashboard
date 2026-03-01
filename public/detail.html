@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>视频曲线详情</title>
+    <style>
+      body { margin: 0; background: #000; color: #e5e7eb; font-family: Arial, sans-serif; }
+      .wrap { max-width: 1400px; margin: 0 auto; padding: 16px; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .panel {
+        background: rgba(0, 0, 0, 0.9);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        padding: 10px;
+      }
+      .small { font-size: 11px; color: #94a3b8; }
+      .btn, .input, .select {
+        background: #000;
+        color: #e2e8f0;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+      }
+      .btn { cursor: pointer; }
+      .btn:hover { border-color: #475569; }
+      .legend { display: inline-flex; align-items: center; gap: 5px; margin-right: 10px; }
+      .dot { width: 8px; height: 8px; border-radius: 9999px; display: inline-block; }
+      .chart-wrap { position: relative; margin-top: 10px; }
+      #chart { width: 100%; height: 460px; background: #020617; border-radius: 8px; }
+      #tip {
+        position: absolute;
+        pointer-events: none;
+        display: none;
+        transform: translate(-50%, -110%);
+        background: rgba(2, 6, 23, 0.96);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+        color: #cbd5e1;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="row" style="justify-content: space-between;">
+        <div>
+          <h2 id="title" style="margin: 0; font-size: 18px;">视频曲线详情</h2>
+          <div class="small" id="bvid-label"></div>
+        </div>
+        <div class="row">
+          <button class="btn" id="back-btn">返回看板</button>
+          <a class="btn" id="bili-link" target="_blank" rel="noopener noreferrer" href="#">打开B站视频</a>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top: 12px;">
+        <div class="row">
+          <label class="small">开始时间
+            <input class="input" type="datetime-local" id="from-input" />
+          </label>
+          <label class="small">结束时间
+            <input class="input" type="datetime-local" id="to-input" />
+          </label>
+          <label class="small"><input type="checkbox" id="show-online" checked /> 显示在线曲线</label>
+          <label class="small"><input type="checkbox" id="show-play" checked /> 显示播放曲线</label>
+          <label class="small"><input type="checkbox" id="smooth-line" checked /> 平滑曲线</label>
+          <button class="btn" id="apply-btn">查询</button>
+          <button class="btn" id="export-btn">导出 CSV</button>
+          <span class="small" id="status-text"></span>
+        </div>
+        <div class="row" style="margin-top: 6px;">
+          <span class="legend small"><span class="dot" style="background:#86efac;"></span>在线</span>
+          <span class="legend small"><span class="dot" style="background:#60a5fa;"></span>播放</span>
+        </div>
+
+        <div class="chart-wrap">
+          <svg id="chart" viewBox="0 0 1200 460" preserveAspectRatio="none"></svg>
+          <div id="tip"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const bvid = params.get("bvid") || "";
+      const chart = document.getElementById("chart");
+      const tip = document.getElementById("tip");
+      let currentPoints = [];
+
+      function toLocalInputValue(ms) {
+        const d = new Date(ms);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+
+      function parseInputMs(id) {
+        const v = document.getElementById(id).value;
+        return v ? new Date(v).getTime() : NaN;
+      }
+
+      function setStatus(text) {
+        document.getElementById("status-text").textContent = text;
+      }
+
+      function normalizeOnline(n) {
+        const x = Number(n) || 0;
+        return x === 1 ? 0 : x;
+      }
+
+      function pointsToSmoothPath(pts) {
+        if (!pts.length) return "";
+        if (pts.length === 1) return `M ${pts[0][0]} ${pts[0][1]}`;
+        let path = `M ${pts[0][0]} ${pts[0][1]}`;
+        for (let i = 0; i < pts.length - 1; i += 1) {
+          const p0 = pts[i === 0 ? i : i - 1];
+          const p1 = pts[i];
+          const p2 = pts[i + 1];
+          const p3 = pts[i + 2] || p2;
+          const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+          const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+          const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+          const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+          path += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2[0]} ${p2[1]}`;
+        }
+        return path;
+      }
+
+      function renderChart(points) {
+        currentPoints = points;
+        if (!points.length) {
+          chart.innerHTML = "";
+          return;
+        }
+        const showOnline = document.getElementById("show-online").checked;
+        const showPlay = document.getElementById("show-play").checked;
+        const smooth = document.getElementById("smooth-line").checked;
+        const left = 50, right = 20, top = 20, bottom = 30;
+        const w = 1200 - left - right;
+        const h = 460 - top - bottom;
+
+        const onlineVals = points.map((p) => normalizeOnline(p.online));
+        const playVals = points.map((p) => Number(p.play) || 0);
+        const onlineMin = Math.min(...onlineVals, 0);
+        const onlineMax = Math.max(...onlineVals, 1);
+        const onlineRange = Math.max(1, onlineMax - onlineMin);
+        const playMin = Math.min(...playVals, 0);
+        const playMax = Math.max(...playVals, 1);
+        const playRange = Math.max(1, playMax - playMin);
+
+        const xAt = (i) => left + (i / Math.max(1, points.length - 1)) * w;
+        const yOnline = (v) => top + (1 - (v - onlineMin) / onlineRange) * h;
+        const yPlay = (v) => top + (1 - (v - playMin) / playRange) * h;
+
+        const onlinePtsArr = points.map((p, i) => [xAt(i), yOnline(normalizeOnline(p.online))]);
+        const playPtsArr = points.map((p, i) => [xAt(i), yPlay(Number(p.play) || 0)]);
+        const onlinePts = onlinePtsArr.map((p) => `${p[0]},${p[1]}`).join(" ");
+        const playPts = playPtsArr.map((p) => `${p[0]},${p[1]}`).join(" ");
+        const onlinePath = pointsToSmoothPath(onlinePtsArr);
+        const playPath = pointsToSmoothPath(playPtsArr);
+
+        const grid = Array.from({ length: 5 }).map((_, i) => {
+          const y = top + (i / 4) * h;
+          return `<line x1="${left}" y1="${y}" x2="${left + w}" y2="${y}" stroke="rgba(148,163,184,0.15)" stroke-width="1"/>`;
+        }).join("");
+
+        chart.innerHTML = `
+          ${grid}
+          ${
+            showOnline
+              ? `<text x="${left}" y="${top - 6}" fill="#86efac" font-size="11">在线轴: ${onlineMin} - ${onlineMax}</text>`
+              : ""
+          }
+          ${
+            showPlay
+              ? `<text x="${left + w - 180}" y="${top - 6}" fill="#60a5fa" font-size="11">播放轴: ${playMin} - ${playMax}</text>`
+              : ""
+          }
+          ${
+            showOnline
+              ? smooth
+                ? `<path d="${onlinePath}" fill="none" stroke="#86efac" stroke-width="2" stroke-linecap="round"/>`
+                : `<polyline points="${onlinePts}" fill="none" stroke="#86efac" stroke-width="2" stroke-linecap="round"/>`
+              : ""
+          }
+          ${
+            showPlay
+              ? smooth
+                ? `<path d="${playPath}" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round"/>`
+                : `<polyline points="${playPts}" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round"/>`
+              : ""
+          }
+        `;
+      }
+
+      function exportCsv() {
+        const from = parseInputMs("from-input");
+        const to = parseInputMs("to-input");
+        if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
+          setStatus("无法导出：时间范围无效");
+          return;
+        }
+        const url = `/api/history/csv?bvid=${encodeURIComponent(bvid)}&from=${from}&to=${to}`;
+        window.open(url, "_blank");
+      }
+
+      async function loadHistory() {
+        const from = parseInputMs("from-input");
+        const to = parseInputMs("to-input");
+        if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
+          setStatus("时间范围无效");
+          return;
+        }
+        setStatus("查询中...");
+        try {
+          const url = `/api/history?bvid=${encodeURIComponent(bvid)}&from=${from}&to=${to}`;
+          const res = await fetch(url);
+          const payload = await res.json();
+          if (!payload.success) throw new Error(payload.message || "查询失败");
+          document.getElementById("title").textContent = payload.meta?.title || `视频 ${bvid}`;
+          renderChart(payload.points || []);
+          setStatus(`共 ${payload.points?.length || 0} 个点`);
+        } catch (e) {
+          setStatus(`失败: ${e.message}`);
+        }
+      }
+
+      function bindHover() {
+        chart.addEventListener("mousemove", (e) => {
+          if (!currentPoints.length) return;
+          const rect = chart.getBoundingClientRect();
+          const ratio = (e.clientX - rect.left) / Math.max(1, rect.width);
+          const idx = Math.max(0, Math.min(currentPoints.length - 1, Math.round(ratio * (currentPoints.length - 1))));
+          const p = currentPoints[idx];
+          const d = new Date(p.timestamp);
+          tip.textContent = `${d.toLocaleString()} | 在线 ${normalizeOnline(p.online)} | 播放 ${p.play}`;
+          tip.style.display = "block";
+          tip.style.left = `${e.clientX - rect.left}px`;
+          tip.style.top = `${e.clientY - rect.top}px`;
+        });
+        chart.addEventListener("mouseleave", () => {
+          tip.style.display = "none";
+        });
+      }
+
+      function init() {
+        if (!bvid) {
+          setStatus("缺少 bvid 参数");
+          return;
+        }
+        document.getElementById("bvid-label").textContent = bvid;
+        document.getElementById("bili-link").href = `https://www.bilibili.com/video/${bvid}`;
+        document.getElementById("back-btn").addEventListener("click", () => {
+          location.href = "/";
+        });
+        document.getElementById("apply-btn").addEventListener("click", loadHistory);
+        document.getElementById("export-btn").addEventListener("click", exportCsv);
+        document.getElementById("show-online").addEventListener("change", () => renderChart(currentPoints));
+        document.getElementById("show-play").addEventListener("change", () => renderChart(currentPoints));
+        document.getElementById("smooth-line").addEventListener("change", () => renderChart(currentPoints));
+        const now = Date.now();
+        document.getElementById("to-input").value = toLocalInputValue(now);
+        document.getElementById("from-input").value = toLocalInputValue(now - 24 * 60 * 60 * 1000);
+        bindHover();
+        loadHistory();
+      }
+
+      init();
+    </script>
+  </body>
+</html>

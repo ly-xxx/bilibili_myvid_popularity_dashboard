@@ -1,0 +1,6 @@
+node_modules/
+data/history/
+data/catalog-snapshot.json
+.env
+.DS_Store
+Thumbs.db
